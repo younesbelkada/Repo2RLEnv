@@ -298,6 +298,19 @@ def record(args) -> None:
     args.out.write_text(json.dumps(result))
 
 
+def first_difference(reference: list[dict], candidate: list[dict]) -> str:
+    """The first call whose result differs, with what the original and the candidate returned."""
+    for i, entry in enumerate(reference):
+        if i >= len(candidate):
+            return f"stopped before {entry.get('call', '?')} (expected {entry.get('shown', '?')})"
+        if not matches(entry.get("result"), candidate[i].get("result")):
+            return (
+                f"{entry.get('call', '?')}: expected {entry.get('shown', '?')}, "
+                f"got {candidate[i].get('shown', '?')}"
+            )[: MAX_DISPLAY * 2]
+    return f"made {len(candidate) - len(reference)} extra calls"
+
+
 def check(args) -> None:
     expected = json.loads(args.expected.read_text())
     suite = ET.Element("testsuite", name="behavior")
@@ -310,9 +323,10 @@ def check(args) -> None:
         else:
             for seed, log in by_seed.items():
                 reference = [e.get("result") for e in log]
-                candidate = [e.get("result") for e in got.get(seed, [])]
+                theirs = got.get(seed, [])
+                candidate = [e.get("result") for e in theirs]
                 if not matches(reference, candidate):
-                    mismatch = f"seed {seed}: behavior differs from the original"
+                    mismatch = f"seed {seed}: " + first_difference(log, theirs)
                     break
         if mismatch:
             ET.SubElement(case, "failure", message=mismatch)
