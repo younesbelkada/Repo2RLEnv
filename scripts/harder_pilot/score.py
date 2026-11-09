@@ -25,7 +25,13 @@ def read_rewards(job_dirs: list[Path]) -> dict[str, list[float | None]]:
     for job_dir in job_dirs:
         for result_path in sorted(job_dir.glob("*/result.json")):
             trial = json.loads(result_path.read_text())
-            task = trial.get("trial_name", result_path.parent.name).split("__")[0]
+            # Trial names truncate long task names (both "-re-*" variants become "-re"), so use the
+            # task folder, then Harbor's task_name, and the trial name only as a last resort.
+            task = (
+                Path(((trial.get("config") or {}).get("task") or {}).get("path") or "").name
+                or str(trial.get("task_name") or "").rsplit("/", 1)[-1]
+                or trial.get("trial_name", result_path.parent.name).split("__")[0]
+            )
             reward = ((trial.get("verifier_result") or {}).get("rewards") or {}).get("reward")
             rewards[task].append(None if reward is None else float(reward))
     return rewards
