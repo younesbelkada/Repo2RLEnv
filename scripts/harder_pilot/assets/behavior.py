@@ -15,6 +15,7 @@ in its own subprocess with a timeout, so module state and hangs can't leak betwe
 from __future__ import annotations
 
 import argparse
+import collections.abc
 import importlib
 import importlib.util
 import json
@@ -101,7 +102,7 @@ def matches(reference, candidate) -> bool:
 
 
 def display(value) -> str:
-    text = value._handle if isinstance(value, ObjectProxy) else repr(value)
+    text = value._handle if isinstance(value, ObjectProxy | IteratorProxy) else repr(value)
     return text if len(text) <= MAX_DISPLAY else text[:MAX_DISPLAY] + "…"
 
 
@@ -120,6 +121,11 @@ class Api:
         )
 
     def wrap_result(self, value):
+        # A returned iterator (e.g. a generator) is logged item by item as it is consumed: its repr
+        # holds a memory address, and laziness is behavior too (mutating while iterating).
+        if isinstance(value, collections.abc.Iterator) and not isinstance(value, BaseException):
+            self.handles += 1
+            return IteratorProxy(self, f"iterator{self.handles}", value)
         if (
             type(value).__module__.split(".")[0] in self.tracked
             and not isinstance(value, BaseException | type)
@@ -130,8 +136,9 @@ class Api:
         return value
 
     def call(self, label: str, function, args, kwargs):
-        raw_args = [a._target if isinstance(a, ObjectProxy) else a for a in args]
-        raw_kwargs = {k: v._target if isinstance(v, ObjectProxy) else v for k, v in kwargs.items()}
+        proxies = ObjectProxy | IteratorProxy
+        raw_args = [a._target if isinstance(a, proxies) else a for a in args]
+        raw_kwargs = {k: v._target if isinstance(v, proxies) else v for k, v in kwargs.items()}
         shown_args = ", ".join(
             [display(a) for a in args] + [f"{k}={display(v)}" for k, v in kwargs.items()]
         )
@@ -146,7 +153,10 @@ class Api:
             entry["shown"] = f"raises {type(error).__name__}" + (f" ({detail})" if detail else "")
             raise
         wrapped = self.wrap_result(result)
-        if isinstance(wrapped, ObjectProxy):
+        if isinstance(wrapped, IteratorProxy):
+            entry["result"] = {"__iterator__": True}
+            entry["shown"] = f"-> {wrapped._handle} (an iterator)"
+        elif isinstance(wrapped, ObjectProxy):
             entry["result"] = {"__handle__": type(result).__name__}
             entry["shown"] = f"-> {wrapped._handle} (a {type(result).__name__})"
         else:
@@ -211,6 +221,18 @@ class ObjectProxy:
         return self._api.call(
             f"{self._handle}.__contains__", self._target.__contains__, (item,), {}
         )
+
+
+class IteratorProxy:
+    def __init__(self, api: Api, handle: str, target):
+        self._api, self._handle, self._target = api, handle, target
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        # StopIteration is logged like any exception ("raises StopIteration"), then re-raised.
+        return self._api.call(f"{self._handle}.__next__", lambda: next(self._target), (), {})
 
 
 def load_scenarios(path: Path) -> dict:

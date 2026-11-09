@@ -282,11 +282,16 @@ def problem(runs: dict | None, again: dict | None) -> str | None:
         for entry in log:
             if isinstance(entry.get("result"), dict) and "__error__" in entry["result"]:
                 return f"seed {seed}: {entry['shown']}"
-    if runs != again:
+
+    # Compare results only: the displayed text can hold memory addresses.
+    def results(logs):
+        return {seed: [e.get("result") for e in log] for seed, log in (logs or {}).items()}
+
+    if results(runs) != results(again):
         for seed, log in runs.items():
             other = (again or {}).get(seed) or []
             for i, entry in enumerate(log):
-                if i >= len(other) or entry != other[i]:
+                if i >= len(other) or entry.get("result") != other[i].get("result"):
                     shown = other[i]["shown"] if i < len(other) else "<missing>"
                     return (
                         f"not deterministic: seed {seed}, {entry['call'][:80]}: "
