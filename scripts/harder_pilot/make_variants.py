@@ -663,12 +663,17 @@ def main() -> None:
     report = []
     for task_id in args.seeds:
         console.info(f"seed {task_id}")
-        with tempfile.TemporaryDirectory(prefix="harder-pilot-") as work:
-            try:
-                seed = Seed(task_id, download(task_id, args.out / "seeds"))
-                records = make_variants_for(seed, args.out, args.bugs, Path(work))
-            except (Skip, llm.BudgetExceeded) as skip:
-                records = [{"variant": "*", "kept": False, "reason": str(skip)}]
+        work = Path(tempfile.mkdtemp(prefix="harder-pilot-"))
+        try:
+            seed = Seed(task_id, download(task_id, args.out / "seeds"))
+            records = make_variants_for(seed, args.out, args.bugs, work)
+        except (Skip, llm.BudgetExceeded) as skip:
+            records = [{"variant": "*", "kept": False, "reason": str(skip)}]
+        finally:
+            # On Linux, containers leave root-owned files (e.g. __pycache__) the host user can't delete.
+            shutil.rmtree(work, ignore_errors=True)
+            if work.exists():
+                docker.remove_as_root(work)
         for record in records:
             status = "kept" if record["kept"] else "drop"
             console.dim(
