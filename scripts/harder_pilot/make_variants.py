@@ -344,11 +344,26 @@ def public_names(seed: Seed) -> str:
         if not path.endswith(".py"):
             continue
         tree = ast.parse(source)
-        names = [
-            f"{n.name} (class)" if isinstance(n, ast.ClassDef) else n.name
-            for n in tree.body
-            if isinstance(n, ast.FunctionDef | ast.ClassDef) and not n.name.startswith("_")
-        ]
+        names = []
+        for n in tree.body:
+            name = getattr(n, "name", None)
+            if not name or name.startswith("_"):
+                continue
+            if isinstance(n, ast.FunctionDef):
+                names.append(n.name)
+            elif isinstance(n, ast.ClassDef):
+                # Methods too: graders call them, and a trace may not happen to show every one.
+                methods = [
+                    m.name
+                    for m in n.body
+                    if isinstance(m, ast.FunctionDef | ast.AsyncFunctionDef)
+                    and not m.name.startswith("_")
+                ]
+                names.append(
+                    f"{n.name} (class; methods: {', '.join(methods)})"
+                    if methods
+                    else f"{n.name} (class)"
+                )
         if names:
             module = path.removesuffix(".py").replace("/", ".")
             lines.append(f"- `{module}`: {', '.join(names)}")
