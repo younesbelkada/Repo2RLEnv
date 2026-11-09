@@ -19,6 +19,7 @@ import importlib
 import importlib.util
 import json
 import math
+import os
 import random
 import resource
 import subprocess
@@ -234,6 +235,10 @@ def run_one(root: Path, scenarios: Path, name: str, seeds: list[int]) -> dict:
     function = load_scenarios(scenarios)[name]
     logs = {}
     for seed in seeds:
+        # Fresh module state per seed (counters, registries), so a seed's log doesn't depend on
+        # which seeds ran before it: recording runs shown + hidden seeds, checking only hidden ones.
+        for module in [m for m in sys.modules if m.split(".")[0] in tracked]:
+            del sys.modules[module]
         api = Api(tracked)
         try:
             function(api, random.Random(seed))
@@ -245,7 +250,7 @@ def run_one(root: Path, scenarios: Path, name: str, seeds: list[int]) -> dict:
                 api.log.append(
                     {
                         "call": "scenario",
-                        "shown": "scenario error",
+                        "shown": f"scenario error: {type(error).__name__}: {error}"[:MAX_DISPLAY],
                         "result": {"__error__": type(error).__name__},
                     }
                 )
@@ -274,6 +279,8 @@ def run_isolated(root: Path, scenarios: Path, name: str, seeds: list[int]) -> di
             capture_output=True,
             text=True,
             timeout=SCENARIO_TIMEOUT_SECONDS,
+            # String hashing is randomized per process; fix it so set/dict order is reproducible.
+            env={**os.environ, "PYTHONHASHSEED": "0"},
             preexec_fn=lambda: resource.setrlimit(resource.RLIMIT_AS, (MEMORY_BYTES, MEMORY_BYTES)),
         )
     except subprocess.TimeoutExpired:

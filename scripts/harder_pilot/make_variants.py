@@ -272,15 +272,28 @@ def record_behavior(seed: Seed, scenarios: str, seeds: list[int], work: Path, ta
     return json.loads((pilot / "log.json").read_text())
 
 
-def usable(runs: dict | None) -> bool:
+def problem(runs: dict | None, again: dict | None) -> str | None:
+    """Why a scenario can't be used for grading, or None if it is usable."""
     if not runs:
-        return False
-    for log in runs.values():
-        if not log or any(
-            isinstance(e.get("result"), dict) and "__error__" in e["result"] for e in log
-        ):
-            return False
-    return True
+        return "crashed or timed out"
+    for seed, log in runs.items():
+        if not log:
+            return f"seed {seed}: logged nothing"
+        for entry in log:
+            if isinstance(entry.get("result"), dict) and "__error__" in entry["result"]:
+                return f"seed {seed}: {entry['shown']}"
+    if runs != again:
+        for seed, log in runs.items():
+            other = (again or {}).get(seed) or []
+            for i, entry in enumerate(log):
+                if i >= len(other) or entry != other[i]:
+                    shown = other[i]["shown"] if i < len(other) else "<missing>"
+                    return (
+                        f"not deterministic: seed {seed}, {entry['call'][:80]}: "
+                        f"{entry['shown'][:60]} vs {shown[:60]}"
+                    )
+        return "not deterministic"
+    return None
 
 
 def behavior(seed: Seed, work: Path) -> tuple[str, dict, dict]:
@@ -289,9 +302,14 @@ def behavior(seed: Seed, work: Path) -> tuple[str, dict, dict]:
     seeds = SHOWN_SEEDS + HIDDEN_SEEDS
     first = record_behavior(seed, scenarios, seeds, work, "a")
     second = record_behavior(seed, scenarios, seeds, work, "b")
-    kept = [name for name, runs in first.items() if usable(runs) and runs == second.get(name)]
+    problems = {name: problem(runs, second.get(name)) for name, runs in first.items()}
+    kept = [name for name, reason in problems.items() if reason is None]
+    for name, reason in problems.items():
+        if reason:
+            console.dim(f"  scenario {name} dropped: {reason}")
     if len(kept) < 2:
-        raise Skip(f"only {len(kept)} deterministic scenarios")
+        dropped = "; ".join(f"{n}: {r}" for n, r in problems.items() if r)
+        raise Skip(f"only {len(kept)} usable scenarios ({dropped})")
     expected = {n: {str(s): first[n][str(s)] for s in HIDDEN_SEEDS} for n in kept}
     shown = {n: {str(s): first[n][str(s)] for s in SHOWN_SEEDS} for n in kept}
     return scenarios, expected, shown
