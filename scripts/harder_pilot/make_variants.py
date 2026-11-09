@@ -350,6 +350,48 @@ def public_names(seed: Seed) -> str:
     return "\n".join(lines)
 
 
+def graded_imports(seed: Seed) -> str:
+    """The project names the hidden tests import, as import lines.
+
+    The interface alone can miss some (constants, helper classes): one missing name fails the
+    tests' import, so every hidden test errors however good the reimplementation is.
+    """
+    packages = {m.split(".")[0] for m in seed.modules()}
+    tree = ast.parse((seed.dir / "tests" / "test_hidden.py").read_text())
+    by_module: dict[str, set[str]] = {}
+    imported_modules: dict[str, str] = {}  # local alias -> module, for `import pkg` + pkg.NAME
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+            if node.module.split(".")[0] in packages:
+                by_module.setdefault(node.module, set()).update(a.name for a in node.names)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.split(".")[0] in packages:
+                    imported_modules[alias.asname or alias.name] = alias.name
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id in imported_modules
+        ):
+            by_module.setdefault(imported_modules[node.value.id], set()).add(node.attr)
+    return "\n".join(
+        f"- `from {module} import {', '.join(sorted(names))}`"
+        for module, names in sorted(by_module.items())
+        if names - {"*"}
+    )
+
+
+def with_graded_imports(interface: str, seed: Seed) -> str:
+    imports = graded_imports(seed)
+    if not imports:
+        return interface
+    return (
+        f"{interface}\n\nThe grader imports exactly these names, so each must exist "
+        f"(with the behavior the log shows):\n\n{imports}"
+    )
+
+
 def interface_code(seed: Seed) -> str:
     blocks = re.findall(r"```python\n(.*?)```", seed.contract, re.S)
     return (
@@ -583,7 +625,9 @@ def make_variants_for(seed: Seed, out: Path, bugs: int, work: Path) -> list[dict
             what="its file layout, public names" if blind else "its file layout, interface",
             title="" if blind else f"\n## What it is\n\n{title}.\n",
             files=files,
-            interface=public_names(seed) if blind else interface_code(seed),
+            interface=with_graded_imports(
+                public_names(seed) if blind else interface_code(seed), seed
+            ),
             trace=render_trace(shown, TRACE_BUDGET[variant]),
         )
         task_dir = out / "tasks" / f"{seed.task_id}-{variant}"
@@ -606,6 +650,8 @@ def make_variants_for(seed: Seed, out: Path, bugs: int, work: Path) -> list[dict
             shutil.rmtree(task_dir, ignore_errors=True)
             records.append({"variant": variant, "kept": False, "reason": str(skip)})
 
+    if bugs == 0:  # debug variant disabled; leaves any existing debug task as it is
+        return records
     task_dir = out / "tasks" / f"{seed.task_id}-debug"
     try:
         normalized = {
@@ -666,7 +712,12 @@ def main() -> None:
     parser.add_argument("--llm", default="huggingface/mistralai/Mistral-Large-4-1T-A52B:openrouter")
     parser.add_argument("--reasoning-effort", default="low", choices=["low", "medium", "high"])
     parser.add_argument("--max-spend-usd", type=float, default=2.0, help="0 = unlimited")
-    parser.add_argument("--bugs", type=int, default=3, help="bugs injected per debug task")
+    parser.add_argument(
+        "--bugs",
+        type=int,
+        default=3,
+        help="bugs injected per debug task; 0 skips the debug variant",
+    )
     parser.add_argument("--platform", default="linux/amd64", help="'native' builds for the host")
     args = parser.parse_args()
 
