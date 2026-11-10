@@ -40,6 +40,7 @@ from repo2rlenv.ui import console
 
 ASSETS = Path(__file__).parent / "assets"
 DATASET = "harness-hub/traj2envs-rl"
+MAX_CONSTANT_CHARS = 4000  # per constant shown in re-* instructions
 SHOWN_SEEDS = list(range(10))
 HIDDEN_SEEDS = list(range(1000, 1020))
 TRACE_BUDGET = {"re-traces": 50, "re-blind": 30}
@@ -370,8 +371,8 @@ def public_names(seed: Seed) -> str:
     return "\n".join(lines)
 
 
-def graded_imports(seed: Seed) -> str:
-    """The project names the hidden tests import, as import lines.
+def graded_names(seed: Seed) -> dict[str, set[str]]:
+    """{module: names} the hidden tests import from the project.
 
     The interface alone can miss some (constants, helper classes): one missing name fails the
     tests' import, so every hidden test errors however good the reimplementation is.
@@ -395,21 +396,61 @@ def graded_imports(seed: Seed) -> str:
             and node.value.id in imported_modules
         ):
             by_module.setdefault(imported_modules[node.value.id], set()).add(node.attr)
-    return "\n".join(
-        f"- `from {module} import {', '.join(sorted(names))}`"
-        for module, names in sorted(by_module.items())
-        if names - {"*"}
-    )
+    return {m: names - {"*"} for m, names in by_module.items() if names - {"*"}}
+
+
+def constant_definitions(seed: Seed, names: set[str]) -> list[str]:
+    """Module-level `NAME = value` lines in the reference for the given UPPER_CASE names.
+
+    A constant the grader imports is interface, not behavior: tests use its exact value (a window
+    size, a data table), which a call log rarely reveals.
+    """
+    wanted = {n for n in names if n.isupper()}
+    found = {}
+    for path, source in seed.reference.items():
+        if not path.endswith(".py"):
+            continue
+        for node in ast.parse(source).body:
+            targets = (
+                [t.id for t in node.targets if isinstance(t, ast.Name)]
+                if isinstance(node, ast.Assign)
+                else [node.target.id]
+                if isinstance(node, ast.AnnAssign)
+                and isinstance(node.target, ast.Name)
+                and node.value is not None
+                else []
+            )
+            for target in targets:
+                if target in wanted and target not in found:
+                    text = f"{target} = {ast.unparse(node.value)}"
+                    found[target] = (
+                        text
+                        if len(text) <= MAX_CONSTANT_CHARS
+                        else text[:MAX_CONSTANT_CHARS] + " ..."
+                    )
+    return [found[n] for n in sorted(found)]
 
 
 def with_graded_imports(interface: str, seed: Seed) -> str:
-    imports = graded_imports(seed)
-    if not imports:
+    by_module = graded_names(seed)
+    if not by_module:
         return interface
-    return (
+    imports = "\n".join(
+        f"- `from {module} import {', '.join(sorted(names))}`"
+        for module, names in sorted(by_module.items())
+    )
+    text = (
         f"{interface}\n\nThe grader imports exactly these names, so each must exist "
         f"(with the behavior the log shows):\n\n{imports}"
     )
+    constants = constant_definitions(seed, set().union(*by_module.values()))
+    if constants:
+        text += (
+            "\n\nConstants among them must have exactly these values:\n\n```python\n"
+            + "\n".join(constants)
+            + "\n```"
+        )
+    return text
 
 
 def interface_code(seed: Seed) -> str:
